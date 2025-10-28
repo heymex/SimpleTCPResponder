@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import logging
 import signal
+import socket
 import sys
 from typing import List, Union
 
@@ -20,6 +21,49 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def get_active_ip_addresses() -> List[str]:
+    """Get list of active IP addresses on this system, excluding localhost.
+
+    Returns:
+        List of IP addresses
+    """
+    ip_addresses = []
+
+    try:
+        # Get hostname
+        hostname = socket.gethostname()
+
+        # Get all IP addresses associated with the hostname
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
+
+        for info in addr_info:
+            ip = info[4][0]
+            # Exclude localhost addresses
+            if not ip.startswith('127.'):
+                if ip not in ip_addresses:
+                    ip_addresses.append(ip)
+
+        # Also try to get IPs by connecting to an external address
+        # This helps find the primary network interface IP
+        try:
+            # Create a socket and connect to a public DNS server
+            # This doesn't actually send data, just determines routing
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            primary_ip = s.getsockname()[0]
+            s.close()
+
+            if primary_ip and not primary_ip.startswith('127.') and primary_ip not in ip_addresses:
+                ip_addresses.insert(0, primary_ip)  # Put primary IP first
+        except Exception:
+            pass  # If this fails, we'll just use what we got from getaddrinfo
+
+    except Exception as e:
+        logger.debug(f"Error getting IP addresses: {e}")
+
+    return ip_addresses
 
 
 class ServerManager:
@@ -75,9 +119,31 @@ class ServerManager:
         print("\n" + "="*60)
         print("SimpleTCPResponder - Active Servers")
         print("="*60)
+
+        # Check if any server is bound to all interfaces
+        has_wildcard_bind = any(
+            server.bind_address == '0.0.0.0' for server in self.servers
+        )
+
+        # Get active IP addresses if we have wildcard binds
+        active_ips = []
+        if has_wildcard_bind:
+            active_ips = get_active_ip_addresses()
+
         for server in self.servers:
             server_type = server.__class__.__name__.replace('Server', '')
             print(f"  {server_type.upper()}: {server.bind_address}:{server.port}")
+
+        # Display active IP addresses if binding to all interfaces
+        if active_ips:
+            print("="*60)
+            print("Active IP addresses on this system:")
+            for ip in active_ips:
+                print(f"  {ip}")
+            print()
+            print("Servers bound to 0.0.0.0 are accessible via any of the")
+            print("above IP addresses.")
+
         print("="*60)
         print("Press Ctrl+C to stop all servers")
         print("="*60 + "\n")
